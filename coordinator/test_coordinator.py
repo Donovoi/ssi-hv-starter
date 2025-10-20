@@ -545,5 +545,301 @@ class TestClusterState:
         assert state.total_vcpus() == 12
 
 
+class TestTransportEndpoints:
+    """Test transport endpoint registration and discovery"""
+
+    def test_register_tcp_endpoint(self):
+        # Create cluster with node
+        client.post(
+            "/cluster",
+            json={
+                "name": "test-cluster",
+                "nodes": [
+                    {
+                        "node_id": 0,
+                        "hostname": "node0",
+                        "ip_address": "192.168.1.10",
+                        "cpu_count": 4,
+                        "memory_mb": 8192,
+                        "status": "active",
+                    }
+                ],
+            },
+        )
+
+        # Register TCP endpoint
+        response = client.post(
+            "/nodes/0/endpoint",
+            json={
+                "transport_type": "tcp",
+                "tcp_addr": "192.168.1.10",
+                "tcp_port": 50051,
+            },
+        )
+        assert response.status_code == 201
+        data = response.json()
+        assert data["status"] == "registered"
+        assert data["node_id"] == 0
+        assert data["transport_type"] == "tcp"
+
+        # Cleanup
+        client.delete("/cluster")
+
+    def test_register_rdma_endpoint(self):
+        # Create cluster with node
+        client.post(
+            "/cluster",
+            json={
+                "name": "test-cluster",
+                "nodes": [
+                    {
+                        "node_id": 0,
+                        "hostname": "node0",
+                        "ip_address": "192.168.1.10",
+                        "cpu_count": 4,
+                        "memory_mb": 8192,
+                        "status": "active",
+                    }
+                ],
+            },
+        )
+
+        # Register RDMA endpoint
+        response = client.post(
+            "/nodes/0/endpoint",
+            json={
+                "transport_type": "rdma",
+                "rdma_qpn": 12345,
+                "rdma_lid": 1,
+                "rdma_gid": "fe80::1",
+                "rdma_psn": 100,
+            },
+        )
+        assert response.status_code == 201
+        data = response.json()
+        assert data["status"] == "registered"
+        assert data["transport_type"] == "rdma"
+
+        # Cleanup
+        client.delete("/cluster")
+
+    def test_get_endpoint(self):
+        # Create cluster
+        client.post(
+            "/cluster",
+            json={
+                "name": "test-cluster",
+                "nodes": [
+                    {
+                        "node_id": 0,
+                        "hostname": "node0",
+                        "ip_address": "192.168.1.10",
+                        "cpu_count": 4,
+                        "memory_mb": 8192,
+                        "status": "active",
+                    }
+                ],
+            },
+        )
+
+        # Register endpoint
+        client.post(
+            "/nodes/0/endpoint",
+            json={
+                "transport_type": "tcp",
+                "tcp_addr": "192.168.1.10",
+                "tcp_port": 50051,
+            },
+        )
+
+        # Get endpoint
+        response = client.get("/nodes/0/endpoint")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["transport_type"] == "tcp"
+        assert data["tcp_addr"] == "192.168.1.10"
+        assert data["tcp_port"] == 50051
+
+        # Cleanup
+        client.delete("/cluster")
+
+    def test_get_endpoint_not_found(self):
+        # Create cluster
+        client.post(
+            "/cluster",
+            json={
+                "name": "test-cluster",
+                "nodes": [
+                    {
+                        "node_id": 0,
+                        "hostname": "node0",
+                        "ip_address": "192.168.1.10",
+                        "cpu_count": 4,
+                        "memory_mb": 8192,
+                        "status": "active",
+                    }
+                ],
+            },
+        )
+
+        # Try to get endpoint for node without registered endpoint
+        response = client.get("/nodes/0/endpoint")
+        assert response.status_code == 404
+
+        # Cleanup
+        client.delete("/cluster")
+
+    def test_list_all_endpoints(self):
+        # Create cluster with multiple nodes
+        client.post(
+            "/cluster",
+            json={
+                "name": "test-cluster",
+                "nodes": [
+                    {
+                        "node_id": 0,
+                        "hostname": "node0",
+                        "ip_address": "192.168.1.10",
+                        "cpu_count": 4,
+                        "memory_mb": 8192,
+                        "status": "active",
+                    },
+                    {
+                        "node_id": 1,
+                        "hostname": "node1",
+                        "ip_address": "192.168.1.11",
+                        "cpu_count": 4,
+                        "memory_mb": 8192,
+                        "status": "active",
+                    },
+                ],
+            },
+        )
+
+        # Register endpoints
+        client.post(
+            "/nodes/0/endpoint",
+            json={
+                "transport_type": "tcp",
+                "tcp_addr": "192.168.1.10",
+                "tcp_port": 50051,
+            },
+        )
+        client.post(
+            "/nodes/1/endpoint",
+            json={
+                "transport_type": "tcp",
+                "tcp_addr": "192.168.1.11",
+                "tcp_port": 50051,
+            },
+        )
+
+        # List all endpoints
+        response = client.get("/endpoints")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["cluster_name"] == "test-cluster"
+        assert "endpoints" in data
+        assert "0" in data["endpoints"]
+        assert "1" in data["endpoints"]
+        assert data["endpoints"]["0"]["transport_type"] == "tcp"
+        assert data["endpoints"]["1"]["transport_type"] == "tcp"
+
+        # Cleanup
+        client.delete("/cluster")
+
+    def test_update_endpoint(self):
+        # Create cluster
+        client.post(
+            "/cluster",
+            json={
+                "name": "test-cluster",
+                "nodes": [
+                    {
+                        "node_id": 0,
+                        "hostname": "node0",
+                        "ip_address": "192.168.1.10",
+                        "cpu_count": 4,
+                        "memory_mb": 8192,
+                        "status": "active",
+                    }
+                ],
+            },
+        )
+
+        # Register TCP endpoint
+        client.post(
+            "/nodes/0/endpoint",
+            json={
+                "transport_type": "tcp",
+                "tcp_addr": "192.168.1.10",
+                "tcp_port": 50051,
+            },
+        )
+
+        # Update to different port
+        response = client.post(
+            "/nodes/0/endpoint",
+            json={
+                "transport_type": "tcp",
+                "tcp_addr": "192.168.1.10",
+                "tcp_port": 50052,
+            },
+        )
+        assert response.status_code == 201
+
+        # Verify update
+        response = client.get("/nodes/0/endpoint")
+        data = response.json()
+        assert data["tcp_port"] == 50052
+
+        # Cleanup
+        client.delete("/cluster")
+
+    def test_register_endpoint_no_cluster(self):
+        response = client.post(
+            "/nodes/0/endpoint",
+            json={
+                "transport_type": "tcp",
+                "tcp_addr": "192.168.1.10",
+                "tcp_port": 50051,
+            },
+        )
+        assert response.status_code == 404
+
+    def test_register_endpoint_node_not_found(self):
+        # Create cluster
+        client.post(
+            "/cluster",
+            json={
+                "name": "test-cluster",
+                "nodes": [
+                    {
+                        "node_id": 0,
+                        "hostname": "node0",
+                        "ip_address": "192.168.1.10",
+                        "cpu_count": 4,
+                        "memory_mb": 8192,
+                        "status": "active",
+                    }
+                ],
+            },
+        )
+
+        # Try to register endpoint for non-existent node
+        response = client.post(
+            "/nodes/999/endpoint",
+            json={
+                "transport_type": "tcp",
+                "tcp_addr": "192.168.1.10",
+                "tcp_port": 50051,
+            },
+        )
+        assert response.status_code == 404
+
+        # Cleanup
+        client.delete("/cluster")
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

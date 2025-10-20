@@ -29,15 +29,29 @@ logger = logging.getLogger("ssi-hv-coordinator")
 # ============================================================================
 
 
+class TransportEndpoint(BaseModel):
+    """Transport endpoint information (TCP or RDMA)"""
+    transport_type: str  # "tcp" or "rdma"
+    # TCP fields
+    tcp_addr: Optional[str] = None
+    tcp_port: Optional[int] = None
+    # RDMA fields (optional)
+    rdma_qpn: Optional[int] = None
+    rdma_lid: Optional[int] = None
+    rdma_gid: Optional[str] = None
+    rdma_psn: Optional[int] = None
+
+
 class NodeInfo(BaseModel):
     """Node information for cluster membership"""
     node_id: int
     hostname: str
     ip_address: str
-    rdma_gid: Optional[str] = None
+    rdma_gid: Optional[str] = None  # Deprecated, use endpoint.rdma_gid
     cpu_count: int
     memory_mb: int
     status: str = "joining"  # joining, active, leaving, failed
+    endpoint: Optional[TransportEndpoint] = None  # Transport endpoint
 
 
 class ClusterConfig(BaseModel):
@@ -75,13 +89,21 @@ class ClusterState:
     """In-memory cluster state"""
     name: str
     nodes: Dict[int, NodeInfo] = field(default_factory=dict)
+    endpoints: Dict[int, TransportEndpoint] = field(
+        default_factory=dict)  # node_id -> endpoint
     created_at: datetime = field(default_factory=datetime.now)
     vm_running: bool = False
 
     def add_node(self, node: NodeInfo):
         """Add node to cluster"""
         self.nodes[node.node_id] = node
-        logger.info(f"Node {node.node_id} ({node.hostname}) joined cluster")
+        if node.endpoint:
+            self.endpoints[node.node_id] = node.endpoint
+            logger.info(
+                f"Node {node.node_id} ({node.hostname}) joined cluster with {node.endpoint.transport_type.upper()} transport")
+        else:
+            logger.info(
+                f"Node {node.node_id} ({node.hostname}) joined cluster")
 
     def remove_node(self, node_id: int):
         """Remove node from cluster"""
@@ -305,6 +327,77 @@ async def get_page_info(gpa: str) -> dict:
         "heat": 0,
         "access_count": 0,
         "migration_count": 0,
+    }
+
+
+@app.post("/nodes/{node_id}/endpoint", status_code=201)
+async def register_endpoint(node_id: int, endpoint: TransportEndpoint) -> dict:
+    """
+    Register or update transport endpoint for a node.
+
+    This allows nodes to advertise their TCP or RDMA endpoints
+    for other nodes to discover and connect to.
+    """
+    if current_cluster is None:
+        raise HTTPException(status_code=404, detail="No active cluster")
+
+    if node_id not in current_cluster.nodes:
+        raise HTTPException(
+            status_code=404, detail=f"Node {node_id} not found")
+
+    # Store endpoint
+    current_cluster.endpoints[node_id] = endpoint
+    current_cluster.nodes[node_id].endpoint = endpoint
+
+    logger.info(
+        f"Node {node_id} registered {endpoint.transport_type.upper()} endpoint: "
+        f"{endpoint.tcp_addr}:{endpoint.tcp_port}" if endpoint.transport_type == "tcp"
+        else f"QPN={endpoint.rdma_qpn}"
+    )
+
+    return {
+        "status": "registered",
+        "node_id": node_id,
+        "transport_type": endpoint.transport_type,
+    }
+
+
+@app.get("/nodes/{node_id}/endpoint")
+async def get_endpoint(node_id: int) -> TransportEndpoint:
+    """
+    Get transport endpoint for a specific node.
+
+    Other nodes use this to discover connection information
+    for remote page fetches.
+    """
+    if current_cluster is None:
+        raise HTTPException(status_code=404, detail="No active cluster")
+
+    if node_id not in current_cluster.endpoints:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No endpoint registered for node {node_id}"
+        )
+
+    return current_cluster.endpoints[node_id]
+
+
+@app.get("/endpoints")
+async def list_all_endpoints() -> dict:
+    """
+    Get all registered transport endpoints in the cluster.
+
+    Useful for nodes to discover all peers at once.
+    """
+    if current_cluster is None:
+        raise HTTPException(status_code=404, detail="No active cluster")
+
+    return {
+        "cluster_name": current_cluster.name,
+        "endpoints": {
+            str(node_id): endpoint.model_dump()
+            for node_id, endpoint in current_cluster.endpoints.items()
+        },
     }
 
 
