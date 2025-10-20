@@ -18,15 +18,15 @@ use userfaultfd::{Event, RegisterMode, Uffd, UffdBuilder};
 const PAGE_SIZE: usize = 4096;
 
 /// Page ownership state
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum PageOwner {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PageOwner {
     Local,
     Remote(u32), // node_id
     Unknown,
 }
 
 /// Page directory tracking ownership across the cluster
-struct PageDirectory {
+pub struct PageDirectory {
     /// Map guest physical page number to owner node
     ownership: RwLock<HashMap<u64, PageOwner>>,
     local_node: u32,
@@ -50,17 +50,67 @@ impl PageDirectory {
     }
 
     /// Claim ownership of a page (first touch)
-    fn claim_page(&self, page_num: u64) {
+    pub fn claim_page(&self, page_num: u64) {
         self.ownership.write().insert(page_num, PageOwner::Local);
+    }
+
+    /// Set page owner explicitly (for testing and migration)
+    pub fn set_owner(&self, page_num: u64, owner: PageOwner) {
+        self.ownership.write().insert(page_num, owner);
+    }
+
+    /// Get total pages tracked
+    pub fn page_count(&self) -> usize {
+        self.ownership.read().len()
     }
 }
 
 /// Statistics for observability (NFR-observability)
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct PagerStats {
     pub local_faults: u64,
     pub remote_faults: u64,
     pub fault_service_time_us: Vec<u64>,
+}
+
+impl PagerStats {
+    /// Calculate median fault service time
+    pub fn median_latency_us(&self) -> Option<u64> {
+        if self.fault_service_time_us.is_empty() {
+            return None;
+        }
+        let mut sorted = self.fault_service_time_us.clone();
+        sorted.sort_unstable();
+        let len = sorted.len();
+        if len % 2 == 0 {
+            // Even number of elements: average the two middle values
+            Some((sorted[len / 2 - 1] + sorted[len / 2]) / 2)
+        } else {
+            // Odd number: take the middle element
+            Some(sorted[len / 2])
+        }
+    }
+
+    /// Calculate p99 fault service time
+    pub fn p99_latency_us(&self) -> Option<u64> {
+        if self.fault_service_time_us.is_empty() {
+            return None;
+        }
+        let mut sorted = self.fault_service_time_us.clone();
+        sorted.sort_unstable();
+        let idx = (sorted.len() as f64 * 0.99) as usize;
+        Some(sorted[idx.min(sorted.len() - 1)])
+    }
+
+    /// Calculate remote miss ratio
+    pub fn remote_miss_ratio(&self) -> f64 {
+        let total = self.local_faults + self.remote_faults;
+        if total == 0 {
+            0.0
+        } else {
+            self.remote_faults as f64 / total as f64
+        }
+    }
 }
 
 /// Main pager structure
@@ -259,4 +309,169 @@ pub fn start_pager(
         .context("Failed to spawn pager thread")?;
 
     Ok(handle)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_page_directory_new() {
+        let dir = PageDirectory::new(0);
+        assert_eq!(dir.local_node, 0);
+        assert_eq!(dir.page_count(), 0);
+    }
+
+    #[test]
+    fn test_page_directory_claim() {
+        let dir = PageDirectory::new(0);
+
+        // Initially unknown
+        assert_eq!(dir.get_owner(0), PageOwner::Unknown);
+
+        // Claim page
+        dir.claim_page(0);
+        assert_eq!(dir.get_owner(0), PageOwner::Local);
+        assert_eq!(dir.page_count(), 1);
+    }
+
+    #[test]
+    fn test_page_directory_set_owner() {
+        let dir = PageDirectory::new(0);
+
+        // Set remote owner
+        dir.set_owner(0, PageOwner::Remote(1));
+        assert_eq!(dir.get_owner(0), PageOwner::Remote(1));
+
+        // Change to local
+        dir.set_owner(0, PageOwner::Local);
+        assert_eq!(dir.get_owner(0), PageOwner::Local);
+    }
+
+    #[test]
+    fn test_page_directory_multiple_pages() {
+        let dir = PageDirectory::new(0);
+
+        dir.claim_page(0);
+        dir.set_owner(1, PageOwner::Remote(1));
+        dir.set_owner(2, PageOwner::Remote(2));
+
+        assert_eq!(dir.get_owner(0), PageOwner::Local);
+        assert_eq!(dir.get_owner(1), PageOwner::Remote(1));
+        assert_eq!(dir.get_owner(2), PageOwner::Remote(2));
+        assert_eq!(dir.get_owner(3), PageOwner::Unknown);
+        assert_eq!(dir.page_count(), 3);
+    }
+
+    #[test]
+    fn test_pager_stats_default() {
+        let stats = PagerStats::default();
+        assert_eq!(stats.local_faults, 0);
+        assert_eq!(stats.remote_faults, 0);
+        assert!(stats.fault_service_time_us.is_empty());
+        assert_eq!(stats.remote_miss_ratio(), 0.0);
+    }
+
+    #[test]
+    fn test_pager_stats_remote_miss_ratio() {
+        let mut stats = PagerStats::default();
+        stats.local_faults = 95;
+        stats.remote_faults = 5;
+
+        assert_eq!(stats.remote_miss_ratio(), 0.05);
+    }
+
+    #[test]
+    fn test_pager_stats_remote_miss_ratio_zero() {
+        let mut stats = PagerStats::default();
+        stats.local_faults = 100;
+        stats.remote_faults = 0;
+
+        assert_eq!(stats.remote_miss_ratio(), 0.0);
+    }
+
+    #[test]
+    fn test_pager_stats_remote_miss_ratio_all_remote() {
+        let mut stats = PagerStats::default();
+        stats.local_faults = 0;
+        stats.remote_faults = 100;
+
+        assert_eq!(stats.remote_miss_ratio(), 1.0);
+    }
+
+    #[test]
+    fn test_pager_stats_median_latency() {
+        let mut stats = PagerStats::default();
+        stats.fault_service_time_us = vec![10, 20, 30, 40, 50];
+
+        assert_eq!(stats.median_latency_us(), Some(30));
+    }
+
+    #[test]
+    fn test_pager_stats_median_latency_even_count() {
+        let mut stats = PagerStats::default();
+        stats.fault_service_time_us = vec![10, 20, 30, 40];
+
+        // Median of even count averages the two middle elements: (20 + 30) / 2 = 25
+        assert_eq!(stats.median_latency_us(), Some(25));
+    }
+
+    #[test]
+    fn test_pager_stats_p99_latency() {
+        let mut stats = PagerStats::default();
+        stats.fault_service_time_us = (1..=100).collect();
+
+        let p99 = stats.p99_latency_us().unwrap();
+        assert!(p99 >= 99);
+    }
+
+    #[test]
+    fn test_pager_stats_p99_latency_small_sample() {
+        let mut stats = PagerStats::default();
+        stats.fault_service_time_us = vec![100, 200, 500];
+
+        // p99 with 3 samples should return highest
+        assert_eq!(stats.p99_latency_us(), Some(500));
+    }
+
+    #[test]
+    fn test_pager_stats_empty_latency() {
+        let stats = PagerStats::default();
+        assert_eq!(stats.median_latency_us(), None);
+        assert_eq!(stats.p99_latency_us(), None);
+    }
+
+    #[test]
+    fn test_page_owner_equality() {
+        assert_eq!(PageOwner::Local, PageOwner::Local);
+        assert_eq!(PageOwner::Remote(1), PageOwner::Remote(1));
+        assert_ne!(PageOwner::Local, PageOwner::Remote(1));
+        assert_ne!(PageOwner::Remote(1), PageOwner::Remote(2));
+        assert_ne!(PageOwner::Unknown, PageOwner::Local);
+    }
+
+    #[test]
+    fn test_page_size_constant() {
+        assert_eq!(PAGE_SIZE, 4096);
+    }
+
+    #[test]
+    fn test_page_owner_clone() {
+        let owner = PageOwner::Remote(5);
+        let cloned = owner.clone();
+        assert_eq!(owner, cloned);
+    }
+
+    #[test]
+    fn test_pager_stats_clone() {
+        let mut stats = PagerStats::default();
+        stats.local_faults = 10;
+        stats.remote_faults = 5;
+        stats.fault_service_time_us = vec![100, 200];
+
+        let cloned = stats.clone();
+        assert_eq!(cloned.local_faults, 10);
+        assert_eq!(cloned.remote_faults, 5);
+        assert_eq!(cloned.fault_service_time_us.len(), 2);
+    }
 }

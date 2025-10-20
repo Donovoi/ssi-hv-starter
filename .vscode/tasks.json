@@ -1,0 +1,142 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Build All",
+            "type": "shell",
+            "command": "cargo",
+            "args": [
+                "build",
+                "--workspace"
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "problemMatcher": [
+                "$rustc"
+            ]
+        },
+        {
+            "label": "Build Release",
+            "type": "shell",
+            "command": "cargo",
+            "args": [
+                "build",
+                "--workspace",
+                "--release"
+            ],
+            "group": "build",
+            "problemMatcher": [
+                "$rustc"
+            ]
+        },
+        {
+            "label": "Test All",
+            "type": "shell",
+            "command": "./dev.sh",
+            "args": [
+                "test"
+            ],
+            "group": {
+                "kind": "test",
+                "isDefault": true
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "Test Rust",
+            "type": "shell",
+            "command": "cargo",
+            "args": [
+                "test",
+                "--workspace"
+            ],
+            "group": "test",
+            "problemMatcher": []
+        },
+        {
+            "label": "Test Python",
+            "type": "shell",
+            "command": "pytest",
+            "args": [
+                "coordinator/test_coordinator.py",
+                "-v"
+            ],
+            "group": "test",
+            "problemMatcher": []
+        },
+        {
+            "label": "Run Coordinator",
+            "type": "shell",
+            "command": "python",
+            "args": [
+                "coordinator/main.py"
+            ],
+            "problemMatcher": [],
+            "isBackground": true
+        },
+        {
+            "label": "Run VMM",
+            "type": "shell",
+            "command": "cargo",
+            "args": [
+                "run",
+                "--bin",
+                "vmm",
+                "--",
+                "--node-id",
+                "0",
+                "--total-nodes",
+                "1"
+            ],
+            "problemMatcher": []
+        },
+        {
+            "label": "Lint",
+            "type": "shell",
+            "command": "./dev.sh",
+            "args": [
+                "lint"
+            ],
+            "problemMatcher": []
+        },
+        {
+            "label": "Fix",
+            "type": "shell",
+            "command": "./dev.sh",
+            "args": [
+                "fix"
+            ],
+            "problemMatcher": []
+        },
+        {
+            "label": "Clean",
+            "type": "shell",
+            "command": "cargo",
+            "args": [
+                "clean"
+            ],
+            "problemMatcher": []
+        },
+        {
+            "label": "Coverage",
+            "type": "shell",
+            "command": "./dev.sh",
+            "args": [
+                "coverage"
+            ],
+            "problemMatcher": []
+        },
+        {
+            "label": "Watch Tests",
+            "type": "shell",
+            "command": "./dev.sh",
+            "args": [
+                "watch"
+            ],
+            "isBackground": true,
+            "problemMatcher": []
+        }
+    ]
+}

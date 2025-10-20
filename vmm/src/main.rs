@@ -184,3 +184,46 @@ fn main() -> Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_vmm_config_default() {
+        let config = VmmConfig::default();
+        assert_eq!(config.mem_size, 1 << 30);
+        assert_eq!(config.num_vcpus, 2);
+        assert_eq!(config.node_id, 0);
+        assert_eq!(config.total_nodes, 1);
+    }
+
+    #[test]
+    fn test_vmm_config_custom() {
+        let config = VmmConfig {
+            mem_size: 2 << 30,
+            num_vcpus: 4,
+            node_id: 1,
+            total_nodes: 2,
+        };
+        assert_eq!(config.mem_size, 2 << 30);
+        assert_eq!(config.num_vcpus, 4);
+        assert_eq!(config.node_id, 1);
+        assert_eq!(config.total_nodes, 2);
+    }
+
+    #[test]
+    fn test_vmm_config_memory_sizes() {
+        let config_1gb = VmmConfig {
+            mem_size: 1 << 30,
+            ..Default::default()
+        };
+        assert_eq!(config_1gb.mem_size, 1_073_741_824);
+
+        let config_4gb = VmmConfig {
+            mem_size: 4 << 30,
+            ..Default::default()
+        };
+        assert_eq!(config_4gb.mem_size, 4_294_967_296);
+    }
+}

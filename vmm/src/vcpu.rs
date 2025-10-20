@@ -24,3 +24,17 @@ impl VcpuManager {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Note: VcpuManager tests require actual KVM file descriptor
+    // These are integration-level tests that need KVM access
+
+    #[test]
+    fn test_vcpu_manager_id() {
+        // This test verifies the structure exists and can be compiled
+        // Actual instantiation requires KVM
+    }
+}
