@@ -1,0 +1,3 @@
+[workspace]
+members = ["vmm", "pager", "rdma-transport", "acpi-gen"]
+resolver = "2"

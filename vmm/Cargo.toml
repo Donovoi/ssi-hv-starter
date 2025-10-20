@@ -1,0 +1,12 @@
+[package]
+name = "vmm"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1"
+kvm-ioctls = "0.24"
+kvm-bindings = "0.8"
+vm-memory = "0.12"
+log = "0.4"
+env_logger = "0.11"

@@ -1,0 +1,13 @@
+# Rust
+/target
+**/*.rs.bk
+Cargo.lock
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# OS junk
+.DS_Store
+Thumbs.db
