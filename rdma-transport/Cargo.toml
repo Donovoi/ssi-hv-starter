@@ -9,5 +9,12 @@ log = "0.4"
 serde = { version = "1", features = ["derive"] }
 parking_lot = "0.12"
 thiserror = "1"
-# Note: rdma-core-sys or ibverbs would go here for real RDMA
-# Using TCP as fallback for development
+libc = "0.2"
+nix = { version = "0.29", features = ["socket", "poll"] }
+
+[build-dependencies]
+bindgen = "0.70"
+
+[features]
+default = []
+stub-rdma = [] # Disable RDMA, use stub implementation for testing

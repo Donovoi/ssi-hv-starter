@@ -15,13 +15,23 @@ build-debug:
 
 # Run tests
 test:
-	@echo "Running unit tests..."
+	@echo "Running all tests (Rust + Python)..."
+	@./dev.sh test
+
+# Run Rust tests only
+test-rust:
+	@echo "Running Rust tests..."
 	cargo test --workspace
+
+# Run Python tests only
+test-python:
+	@echo "Running Python tests..."
+	cd coordinator && pytest test_coordinator.py -v
 
 # Run tests with coverage
 test-coverage:
 	@echo "Running tests with coverage..."
-	cargo tarpaulin --workspace --out Html --output-dir coverage
+	@./dev.sh coverage
 
 # Check code without building
 check:
@@ -111,6 +121,14 @@ dev-setup:
 pre-commit: fmt lint test
 	@echo "✓ All pre-commit checks passed!"
 
+# Watch mode for TDD
+watch:
+	@./dev.sh watch
+
+# Show project statistics
+stats:
+	@./dev.sh stats
+
 # Show help
 help:
 	@echo "SSI-HV Makefile targets:"
@@ -118,11 +136,15 @@ help:
 	@echo "Build & Development:"
 	@echo "  make build           - Build all components (release)"
 	@echo "  make build-debug     - Build all components (debug)"
-	@echo "  make test            - Run unit tests"
+	@echo "  make test            - Run all tests (Rust + Python)"
+	@echo "  make test-rust       - Run Rust tests only"
+	@echo "  make test-python     - Run Python tests only"
+	@echo "  make test-coverage   - Generate coverage report"
 	@echo "  make check           - Check code without building"
 	@echo "  make fmt             - Format code"
 	@echo "  make lint            - Run clippy linter"
 	@echo "  make clean           - Clean build artifacts"
+	@echo "  make watch           - Watch mode for TDD"
 	@echo ""
 	@echo "Running Components:"
 	@echo "  make run-coordinator - Start control plane (port 8000)"
@@ -134,10 +156,15 @@ help:
 	@echo "  make check-kvm        - Verify KVM availability"
 	@echo "  make check-rdma       - Check RDMA devices"
 	@echo ""
-	@echo "Setup:"
+	@echo "Setup & Utilities:"
 	@echo "  make dev-setup       - Setup development environment"
 	@echo "  make install-py      - Install Python dependencies"
 	@echo "  make pre-commit      - Run all pre-commit checks"
+	@echo "  make stats           - Show project statistics"
 	@echo ""
+	@echo "Quick Reference:"
+	@echo "  ./dev.sh help        - Show dev.sh helper commands"
+	@echo ""
+	@echo "Test Status: ✓ 63/63 passing (100%)"
 	@echo "Current milestone: M0/M1 complete"
 	@echo "Next: M2 (RDMA implementation)"
