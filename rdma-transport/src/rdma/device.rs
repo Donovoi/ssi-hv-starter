@@ -2,31 +2,18 @@
 //!
 //! Handles RDMA device discovery, opening, and resource allocation.
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Result};
 use log::{debug, info, warn};
 use std::ffi::CStr;
 use std::ptr;
 use std::sync::Arc;
 
 #[cfg(not(feature = "stub-rdma"))]
-mod ffi {
-    #![allow(non_upper_case_globals)]
-    #![allow(non_camel_case_types)]
-    #![allow(non_snake_case)]
-    #![allow(dead_code)]
-    include!(concat!(env!("OUT_DIR"), "/rdma_bindings.rs"));
-}
+use super::ffi::*;
 
-// Stub implementation when RDMA libraries not available
+// Stub FFI types when RDMA libraries not available
 #[cfg(feature = "stub-rdma")]
-mod ffi {
-    pub type ibv_device = std::ffi::c_void;
-    pub type ibv_context = std::ffi::c_void;
-    pub type ibv_pd = std::ffi::c_void;
-    pub type ibv_mr = std::ffi::c_void;
-}
-
-use ffi::*;
+use super::ffi::*;
 
 /// RDMA device handle with protection domain
 pub struct RdmaDevice {
@@ -150,7 +137,11 @@ impl RdmaDevice {
         #[cfg(not(feature = "stub-rdma"))]
         {
             let mut attr: ibv_port_attr = unsafe { std::mem::zeroed() };
-            let ret = unsafe { ibv_query_port(self.context, port_num, &mut attr) };
+            let ret = unsafe {
+                let compat_attr_ptr = &mut attr as *mut ibv_port_attr as *mut _compat_ibv_port_attr;
+                let ops = (*self.context).ops._compat_query_port.unwrap();
+                ops(self.context, port_num, compat_attr_ptr)
+            };
 
             if ret != 0 {
                 return Err(anyhow!("Failed to query port {}", port_num));
@@ -160,14 +151,17 @@ impl RdmaDevice {
             let mut gid: ibv_gid = unsafe { std::mem::zeroed() };
             let ret = unsafe { ibv_query_gid(self.context, port_num, 0, &mut gid) };
 
-            if ret != 0 {
+            let gid_bytes = if ret != 0 {
                 warn!("Failed to query GID for port {}", port_num);
-            }
+                [0u8; 16]
+            } else {
+                unsafe { gid.raw }
+            };
 
             Ok(PortAttributes {
                 state: attr.state,
                 lid: attr.lid,
-                gid: gid.raw,
+                gid: gid_bytes,
             })
         }
     }
@@ -190,17 +184,12 @@ impl RdmaDevice {
         {
             debug!("Registering memory: addr={:?}, len={}", addr, length);
 
-            let access_flags =
-                IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_WRITE;
+            let access_flags = (ibv_access_flags_IBV_ACCESS_LOCAL_WRITE
+                | ibv_access_flags_IBV_ACCESS_REMOTE_READ
+                | ibv_access_flags_IBV_ACCESS_REMOTE_WRITE) as i32;
 
-            let mr = unsafe {
-                ibv_reg_mr(
-                    self.pd,
-                    addr as *mut libc::c_void,
-                    length,
-                    access_flags as i32,
-                )
-            };
+            let mr =
+                unsafe { ibv_reg_mr(self.pd, addr as *mut libc::c_void, length, access_flags) };
 
             if mr.is_null() {
                 return Err(anyhow!("Failed to register memory region"));

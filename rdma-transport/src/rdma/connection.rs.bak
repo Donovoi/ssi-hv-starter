@@ -93,7 +93,7 @@ impl RdmaConnection {
             let mut qp_init_attr: ibv_qp_init_attr = unsafe { std::mem::zeroed() };
             qp_init_attr.send_cq = cq_send;
             qp_init_attr.recv_cq = cq_recv;
-            qp_init_attr.qp_type = ibv_qp_type_IBV_QPT_RC;
+            qp_init_attr.qp_type = ibv_qp_type::IBV_QPT_RC;
             qp_init_attr.cap.max_send_wr = cq_depth;
             qp_init_attr.cap.max_recv_wr = cq_depth;
             qp_init_attr.cap.max_send_sge = 1;
@@ -181,19 +181,18 @@ impl RdmaConnection {
     #[cfg(not(feature = "stub-rdma"))]
     fn qp_to_init(&self) -> Result<()> {
         let mut attr: ibv_qp_attr = unsafe { std::mem::zeroed() };
-        attr.qp_state = ibv_qp_state_IBV_QPS_INIT;
+        attr.qp_state = ibv_qp_state::IBV_QPS_INIT;
         attr.pkey_index = 0;
         attr.port_num = 1;
-        attr.qp_access_flags = (ibv_access_flags_IBV_ACCESS_REMOTE_READ as u32
-            | ibv_access_flags_IBV_ACCESS_REMOTE_WRITE as u32
-            | ibv_access_flags_IBV_ACCESS_LOCAL_WRITE as u32) as u32;
+        attr.qp_access_flags =
+            (IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_LOCAL_WRITE) as u32;
 
-        let mask = ibv_qp_attr_mask_IBV_QP_STATE
-            | ibv_qp_attr_mask_IBV_QP_PKEY_INDEX
-            | ibv_qp_attr_mask_IBV_QP_PORT
-            | ibv_qp_attr_mask_IBV_QP_ACCESS_FLAGS;
+        let mask = ibv_qp_attr_mask::IBV_QP_STATE
+            | ibv_qp_attr_mask::IBV_QP_PKEY_INDEX
+            | ibv_qp_attr_mask::IBV_QP_PORT
+            | ibv_qp_attr_mask::IBV_QP_ACCESS_FLAGS;
 
-        let ret = unsafe { ibv_modify_qp(self.qp, &mut attr, mask as i32) };
+        let ret = unsafe { ibv_modify_qp(self.qp, &mut attr, mask.0 as i32) };
 
         if ret != 0 {
             return Err(anyhow!("Failed to transition QP to INIT"));
@@ -206,8 +205,8 @@ impl RdmaConnection {
     #[cfg(not(feature = "stub-rdma"))]
     fn qp_to_rtr(&self, remote_ep: &QpEndpoint) -> Result<()> {
         let mut attr: ibv_qp_attr = unsafe { std::mem::zeroed() };
-        attr.qp_state = ibv_qp_state_IBV_QPS_RTR;
-        attr.path_mtu = ibv_mtu_IBV_MTU_4096;
+        attr.qp_state = ibv_qp_state::IBV_QPS_RTR;
+        attr.path_mtu = ibv_mtu::IBV_MTU_4096;
         attr.dest_qp_num = remote_ep.qpn;
         attr.rq_psn = remote_ep.psn;
         attr.max_dest_rd_atomic = 1;
@@ -225,15 +224,15 @@ impl RdmaConnection {
             attr.ah_attr.grh.hop_limit = 64;
         }
 
-        let mask = ibv_qp_attr_mask_IBV_QP_STATE
-            | ibv_qp_attr_mask_IBV_QP_AV
-            | ibv_qp_attr_mask_IBV_QP_PATH_MTU
-            | ibv_qp_attr_mask_IBV_QP_DEST_QPN
-            | ibv_qp_attr_mask_IBV_QP_RQ_PSN
-            | ibv_qp_attr_mask_IBV_QP_MAX_DEST_RD_ATOMIC
-            | ibv_qp_attr_mask_IBV_QP_MIN_RNR_TIMER;
+        let mask = ibv_qp_attr_mask::IBV_QP_STATE
+            | ibv_qp_attr_mask::IBV_QP_AV
+            | ibv_qp_attr_mask::IBV_QP_PATH_MTU
+            | ibv_qp_attr_mask::IBV_QP_DEST_QPN
+            | ibv_qp_attr_mask::IBV_QP_RQ_PSN
+            | ibv_qp_attr_mask::IBV_QP_MAX_DEST_RD_ATOMIC
+            | ibv_qp_attr_mask::IBV_QP_MIN_RNR_TIMER;
 
-        let ret = unsafe { ibv_modify_qp(self.qp, &mut attr, mask as i32) };
+        let ret = unsafe { ibv_modify_qp(self.qp, &mut attr, mask.0 as i32) };
 
         if ret != 0 {
             return Err(anyhow!("Failed to transition QP to RTR"));
@@ -246,21 +245,21 @@ impl RdmaConnection {
     #[cfg(not(feature = "stub-rdma"))]
     fn qp_to_rts(&self) -> Result<()> {
         let mut attr: ibv_qp_attr = unsafe { std::mem::zeroed() };
-        attr.qp_state = ibv_qp_state_IBV_QPS_RTS;
+        attr.qp_state = ibv_qp_state::IBV_QPS_RTS;
         attr.sq_psn = self.local_endpoint.psn;
         attr.timeout = 14; // ~67ms
         attr.retry_cnt = 7;
         attr.rnr_retry = 7;
         attr.max_rd_atomic = 1;
 
-        let mask = ibv_qp_attr_mask_IBV_QP_STATE
-            | ibv_qp_attr_mask_IBV_QP_TIMEOUT
-            | ibv_qp_attr_mask_IBV_QP_RETRY_CNT
-            | ibv_qp_attr_mask_IBV_QP_RNR_RETRY
-            | ibv_qp_attr_mask_IBV_QP_SQ_PSN
-            | ibv_qp_attr_mask_IBV_QP_MAX_QP_RD_ATOMIC;
+        let mask = ibv_qp_attr_mask::IBV_QP_STATE
+            | ibv_qp_attr_mask::IBV_QP_TIMEOUT
+            | ibv_qp_attr_mask::IBV_QP_RETRY_CNT
+            | ibv_qp_attr_mask::IBV_QP_RNR_RETRY
+            | ibv_qp_attr_mask::IBV_QP_SQ_PSN
+            | ibv_qp_attr_mask::IBV_QP_MAX_QP_RD_ATOMIC;
 
-        let ret = unsafe { ibv_modify_qp(self.qp, &mut attr, mask as i32) };
+        let ret = unsafe { ibv_modify_qp(self.qp, &mut attr, mask.0 as i32) };
 
         if ret != 0 {
             return Err(anyhow!("Failed to transition QP to RTS"));
@@ -312,16 +311,14 @@ impl RdmaConnection {
             wr.wr_id = wr_id;
             wr.sg_list = &mut sge;
             wr.num_sge = 1;
-            wr.opcode = ibv_wr_opcode_IBV_WR_RDMA_READ;
-            wr.send_flags = ibv_send_flags_IBV_SEND_SIGNALED as u32;
+            wr.opcode = ibv_wr_opcode::IBV_WR_RDMA_READ;
+            wr.send_flags = ibv_send_flags::IBV_SEND_SIGNALED.0;
             wr.wr.rdma.remote_addr = remote_addr;
             wr.wr.rdma.rkey = remote_rkey;
 
             // Post send
             let mut bad_wr: *mut ibv_send_wr = ptr::null_mut();
-            let ctx = unsafe { (*self.qp).context };
-            let post_send_fn = unsafe { (*ctx).ops.post_send.unwrap() };
-            let ret = unsafe { post_send_fn(self.qp, &mut wr, &mut bad_wr) };
+            let ret = unsafe { ibv_post_send(self.qp, &mut wr, &mut bad_wr) };
 
             if ret != 0 {
                 return Err(anyhow!("Failed to post RDMA READ"));
@@ -364,15 +361,13 @@ impl RdmaConnection {
             wr.wr_id = wr_id;
             wr.sg_list = &mut sge;
             wr.num_sge = 1;
-            wr.opcode = ibv_wr_opcode_IBV_WR_RDMA_WRITE;
-            wr.send_flags = ibv_send_flags_IBV_SEND_SIGNALED as u32;
+            wr.opcode = ibv_wr_opcode::IBV_WR_RDMA_WRITE;
+            wr.send_flags = ibv_send_flags::IBV_SEND_SIGNALED.0;
             wr.wr.rdma.remote_addr = remote_addr;
             wr.wr.rdma.rkey = remote_rkey;
 
             let mut bad_wr: *mut ibv_send_wr = ptr::null_mut();
-            let ctx = unsafe { (*self.qp).context };
-            let post_send_fn = unsafe { (*ctx).ops.post_send.unwrap() };
-            let ret = unsafe { post_send_fn(self.qp, &mut wr, &mut bad_wr) };
+            let ret = unsafe { ibv_post_send(self.qp, &mut wr, &mut bad_wr) };
 
             if ret != 0 {
                 return Err(anyhow!("Failed to post RDMA WRITE"));
@@ -390,16 +385,14 @@ impl RdmaConnection {
         let timeout = Instant::now() + Duration::from_secs(5);
 
         loop {
-            let ctx = unsafe { (*self.cq_send).context };
-            let poll_cq_fn = unsafe { (*ctx).ops.poll_cq.unwrap() };
-            let n = unsafe { poll_cq_fn(self.cq_send, 1, &mut wc) };
+            let n = unsafe { ibv_poll_cq(self.cq_send, 1, &mut wc) };
 
             if n < 0 {
                 return Err(anyhow!("CQ polling failed"));
             }
 
             if n > 0 {
-                if wc.status != ibv_wc_status_IBV_WC_SUCCESS as u32 {
+                if wc.status != ibv_wc_status::IBV_WC_SUCCESS {
                     return Err(anyhow!("RDMA operation failed: status={:?}", wc.status));
                 }
 

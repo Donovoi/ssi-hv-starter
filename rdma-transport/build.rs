@@ -76,21 +76,25 @@ fn main() {
         .allowlist_function("ibv_post_send")
         .allowlist_function("ibv_post_recv")
         .allowlist_function("ibv_poll_cq")
-        // Constants
-        .allowlist_var("IBV_QP_STATE")
-        .allowlist_var("IBV_QP_PKEY_INDEX")
-        .allowlist_var("IBV_QP_PORT")
-        .allowlist_var("IBV_QP_ACCESS_FLAGS")
+        // Constants and enums
+        .allowlist_var("IBV_QP_.*")
         .allowlist_var("IBV_ACCESS_.*")
         .allowlist_var("IBV_WR_.*")
         .allowlist_var("IBV_WC_.*")
         .allowlist_var("IBV_SEND_.*")
+        .allowlist_var("IBV_MTU_.*")
         // QP types and states
         .allowlist_type("ibv_qp_type")
         .allowlist_type("ibv_qp_state")
         .allowlist_type("ibv_wr_opcode")
         .allowlist_type("ibv_wc_status")
         .allowlist_type("ibv_wc_opcode")
+        .allowlist_type("ibv_access_flags")
+        .allowlist_type("ibv_send_flags")
+        .allowlist_type("ibv_qp_attr_mask")
+        .allowlist_type("ibv_mtu")
+        // Also allow _compat types
+        .allowlist_type("_compat_.*")
         // Derive traits
         .derive_debug(true)
         .derive_default(true)
