@@ -12,25 +12,26 @@ fn main() {
     // Check if we're in stub mode
     let stub_mode = env::var("CARGO_FEATURE_STUB_RDMA").is_ok();
 
-    if !stub_mode {
-        // Link against libibverbs only when not in stub mode
+    // Check if libibverbs-dev is available
+    let has_libibverbs = PathBuf::from("/usr/include/infiniband/verbs.h").exists();
+
+    // Only link against libibverbs if not in stub mode AND library is available
+    if !stub_mode && has_libibverbs {
         println!("cargo:rustc-link-lib=ibverbs");
     }
 
     // Check if we should skip bindings generation (for CI/no-RDMA environments)
-    if env::var("SSI_HV_SKIP_RDMA_BINDINGS").is_ok() || stub_mode {
+    if env::var("SSI_HV_SKIP_RDMA_BINDINGS").is_ok() || stub_mode || !has_libibverbs {
         if stub_mode {
             println!("cargo:warning=Stub mode enabled - no RDMA bindings generated");
+        } else if !has_libibverbs {
+            println!("cargo:warning=libibverbs-dev not found, using stub implementation");
+            println!("cargo:warning=Install with: sudo apt-get install libibverbs-dev");
         } else {
             println!(
                 "cargo:warning=Skipping RDMA bindings generation (SSI_HV_SKIP_RDMA_BINDINGS set)"
             );
         }
-        return;
-    } // Check if libibverbs-dev is available
-    if !PathBuf::from("/usr/include/infiniband/verbs.h").exists() {
-        println!("cargo:warning=libibverbs-dev not found, using stub implementation");
-        println!("cargo:warning=Install with: sudo apt-get install libibverbs-dev");
         return;
     }
 

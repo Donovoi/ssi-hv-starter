@@ -6,16 +6,79 @@
 //! 3. Fetching from remote node via RDMA if needed
 //! 4. Resolving fault with UFFDIO_COPY/WAKE
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use crossbeam_channel::{bounded, Receiver, Sender};
 use log::{debug, info, warn};
 use parking_lot::RwLock;
+use rdma_transport::{Endpoint as TransportEndpoint, TransportManager};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use userfaultfd::{Event, RegisterMode, Uffd, UffdBuilder};
 
 const PAGE_SIZE: usize = 4096;
+
+/// Coordinator endpoint model (matches Python API)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CoordinatorEndpoint {
+    transport_type: String,
+    tcp_addr: Option<String>,
+    tcp_port: Option<u16>,
+    rdma_qpn: Option<u32>,
+    rdma_lid: Option<u16>,
+    rdma_gid: Option<String>,
+    rdma_psn: Option<u32>,
+}
+
+impl CoordinatorEndpoint {
+    /// Convert to TransportEndpoint for use with TransportManager
+    fn to_transport_endpoint(&self) -> Result<TransportEndpoint> {
+        match self.transport_type.as_str() {
+            "tcp" => {
+                let addr = self
+                    .tcp_addr
+                    .clone()
+                    .ok_or_else(|| anyhow!("Missing tcp_addr"))?;
+                let port = self.tcp_port.ok_or_else(|| anyhow!("Missing tcp_port"))?;
+                Ok(TransportEndpoint::Tcp { addr, port })
+            }
+            "rdma" => {
+                #[cfg(feature = "rdma-transport")]
+                {
+                    let qpn = self.rdma_qpn.ok_or_else(|| anyhow!("Missing rdma_qpn"))?;
+                    let lid = self.rdma_lid.ok_or_else(|| anyhow!("Missing rdma_lid"))?;
+                    let gid_str = self
+                        .rdma_gid
+                        .clone()
+                        .ok_or_else(|| anyhow!("Missing rdma_gid"))?;
+                    let psn = self.rdma_psn.ok_or_else(|| anyhow!("Missing rdma_psn"))?;
+
+                    // Parse GID from hex string
+                    let gid = hex::decode(gid_str.trim_start_matches("0x"))
+                        .map_err(|e| anyhow!("Invalid GID format: {}", e))?;
+                    if gid.len() != 16 {
+                        return Err(anyhow!("GID must be 16 bytes"));
+                    }
+                    let mut gid_arr = [0u8; 16];
+                    gid_arr.copy_from_slice(&gid);
+
+                    Ok(TransportEndpoint::Rdma {
+                        qpn,
+                        lid,
+                        gid: gid_arr,
+                        psn,
+                    })
+                }
+                #[cfg(not(feature = "rdma-transport"))]
+                {
+                    Err(anyhow!("RDMA transport not compiled in"))
+                }
+            }
+            _ => Err(anyhow!("Unknown transport type: {}", self.transport_type)),
+        }
+    }
+}
 
 /// Page ownership state
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,10 +185,18 @@ pub struct Pager {
     stats: Arc<RwLock<PagerStats>>,
     node_id: u32,
     total_nodes: u32,
+    transport: Arc<RwLock<TransportManager>>,
+    coordinator_url: String,
 }
 
 impl Pager {
-    fn new(base: *mut u8, len: usize, node_id: u32, total_nodes: u32) -> Result<Self> {
+    fn new(
+        base: *mut u8,
+        len: usize,
+        node_id: u32,
+        total_nodes: u32,
+        coordinator_url: &str,
+    ) -> Result<Self> {
         let uffd = UffdBuilder::new()
             .close_on_exec(true)
             .non_blocking(false)
@@ -133,12 +204,33 @@ impl Pager {
             .context("Failed to create userfaultfd")?;
 
         // Register memory region for MISSING mode (page faults)
-        unsafe {
-            uffd.register(base as *mut libc::c_void, len)
-                .context("Failed to register userfaultfd")?;
+        info!(
+            "Attempting to register memory: base={:p}, len=0x{:x}",
+            base, len
+        );
+        match unsafe { uffd.register(base as *mut libc::c_void, len) } {
+            Ok(_) => info!("Successfully registered memory with userfaultfd"),
+            Err(e) => {
+                eprintln!("Failed to register userfaultfd: {:?}", e);
+                return Err(anyhow::anyhow!("Failed to register userfaultfd: {:?}", e));
+            }
         }
 
         info!("Userfaultfd registered: base={:p}, len=0x{:x}", base, len);
+
+        // Initialize transport manager
+        info!("Initializing transport layer for node {}...", node_id);
+        let mut transport =
+            TransportManager::new(node_id).context("Failed to create transport manager")?;
+
+        // Register endpoint with coordinator
+        let local_endpoint = transport.local_endpoint();
+        Self::register_with_coordinator(coordinator_url, node_id, &local_endpoint)
+            .context("Failed to register with coordinator")?;
+
+        // Discover and connect to all peer nodes
+        Self::discover_and_connect_peers(coordinator_url, node_id, &mut transport)
+            .context("Failed to discover peers")?;
 
         Ok(Self {
             uffd,
@@ -148,7 +240,105 @@ impl Pager {
             stats: Arc::new(RwLock::new(PagerStats::default())),
             node_id,
             total_nodes,
+            transport: Arc::new(RwLock::new(transport)),
+            coordinator_url: coordinator_url.to_string(),
         })
+    }
+
+    /// Register local endpoint with coordinator
+    fn register_with_coordinator(
+        coordinator_url: &str,
+        node_id: u32,
+        endpoint: &TransportEndpoint,
+    ) -> Result<()> {
+        let client = reqwest::blocking::Client::new();
+
+        let endpoint_json = match endpoint {
+            TransportEndpoint::Tcp { addr, port } => serde_json::json!({
+                "transport_type": "tcp",
+                "tcp_addr": addr,
+                "tcp_port": port,
+            }),
+            #[cfg(feature = "rdma-transport")]
+            TransportEndpoint::Rdma { qpn, lid, gid, psn } => serde_json::json!({
+                "transport_type": "rdma",
+                "rdma_qpn": qpn,
+                "rdma_lid": lid,
+                "rdma_gid": format!("0x{}", hex::encode(gid)),
+                "rdma_psn": psn,
+            }),
+        };
+
+        let url = format!("{}/nodes/{}/endpoint", coordinator_url, node_id);
+        let response = client
+            .post(&url)
+            .json(&endpoint_json)
+            .timeout(std::time::Duration::from_secs(5))
+            .send()
+            .context("Failed to send endpoint registration")?;
+
+        if !response.status().is_success() {
+            return Err(anyhow!(
+                "Failed to register endpoint: {}",
+                response.status()
+            ));
+        }
+
+        info!("✅ Registered endpoint with coordinator: {:?}", endpoint);
+        Ok(())
+    }
+
+    /// Discover peer endpoints from coordinator and connect
+    fn discover_and_connect_peers(
+        coordinator_url: &str,
+        local_node_id: u32,
+        transport: &mut TransportManager,
+    ) -> Result<()> {
+        let client = reqwest::blocking::Client::new();
+        let url = format!("{}/endpoints", coordinator_url);
+
+        let response = client
+            .get(&url)
+            .timeout(std::time::Duration::from_secs(5))
+            .send()
+            .context("Failed to fetch endpoints")?;
+
+        if !response.status().is_success() {
+            return Err(anyhow!("Failed to fetch endpoints: {}", response.status()));
+        }
+
+        #[derive(Deserialize)]
+        struct EndpointsResponse {
+            endpoints: HashMap<String, CoordinatorEndpoint>,
+        }
+
+        let endpoints_resp: EndpointsResponse = response
+            .json()
+            .context("Failed to parse endpoints response")?;
+
+        info!(
+            "📋 Discovered {} peer nodes",
+            endpoints_resp.endpoints.len()
+        );
+
+        // Connect to all peers except self
+        for (node_id_str, coord_endpoint) in endpoints_resp.endpoints {
+            let peer_node_id: u32 = node_id_str.parse().context("Invalid node ID in response")?;
+
+            if peer_node_id == local_node_id {
+                continue; // Skip self
+            }
+
+            let transport_endpoint = coord_endpoint
+                .to_transport_endpoint()
+                .context("Failed to convert endpoint")?;
+
+            transport
+                .connect_peer(peer_node_id, transport_endpoint)
+                .context(format!("Failed to connect to node {}", peer_node_id))?;
+        }
+
+        Ok(())
     }
 
     /// Main fault handling loop
@@ -252,17 +442,26 @@ impl Pager {
         Ok(())
     }
 
-    /// Fetch page from remote node (M2/M3 - RDMA integration)
+    /// Fetch page from remote node via transport layer
     fn fetch_remote_page(&self, addr: u64, remote_node: u32) -> Result<()> {
         debug!(
             "Fetching remote page: addr=0x{:x}, from node {}",
             addr, remote_node
         );
 
-        // TODO M2: Use RDMA transport to fetch page
-        // For now, use zero page as fallback
-        let page_data =
-            rdma_transport::fetch_page(remote_node, addr).unwrap_or_else(|_| vec![0u8; PAGE_SIZE]);
+        // Use TransportManager to fetch page (works with TCP or RDMA)
+        let transport = self.transport.read();
+        let page_data = transport
+            .fetch_page(addr, remote_node)
+            .context("Failed to fetch page via transport")?;
+
+        if page_data.len() != PAGE_SIZE {
+            return Err(anyhow!(
+                "Invalid page size: expected {}, got {}",
+                PAGE_SIZE,
+                page_data.len()
+            ));
+        }
 
         unsafe {
             self.uffd
@@ -287,21 +486,40 @@ impl Pager {
             fault_service_time_us: stats.fault_service_time_us.clone(),
         }
     }
+
+    /// Get page directory for testing
+    pub fn directory(&self) -> &Arc<PageDirectory> {
+        &self.directory
+    }
+
+    /// Get transport manager for testing
+    pub fn transport(&self) -> Arc<RwLock<TransportManager>> {
+        Arc::clone(&self.transport)
+    }
 }
 
 /// Start pager in background thread
+///
+/// # Arguments
+/// * `base` - Base address of guest memory region
+/// * `len` - Length of memory region
+/// * `node_id` - Local node identifier
+/// * `total_nodes` - Total nodes in cluster
+/// * `coordinator_url` - Coordinator URL (e.g., "http://localhost:8000")
 pub fn start_pager(
     base: *mut u8,
     len: usize,
     node_id: u32,
     total_nodes: u32,
+    coordinator_url: &str,
 ) -> Result<JoinHandle<Result<()>>> {
     info!(
         "Starting pager: base={:p}, len=0x{:x}, node={}/{}",
         base, len, node_id, total_nodes
     );
+    info!("Coordinator: {}", coordinator_url);
 
-    let pager = Pager::new(base, len, node_id, total_nodes)?;
+    let pager = Pager::new(base, len, node_id, total_nodes, coordinator_url)?;
 
     let handle = thread::Builder::new()
         .name(format!("pager-node{}", node_id))

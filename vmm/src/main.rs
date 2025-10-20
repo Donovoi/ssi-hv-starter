@@ -19,6 +19,8 @@ struct VmmConfig {
     node_id: u32,
     /// Total nodes in cluster
     total_nodes: u32,
+    /// Coordinator URL (e.g., http://100.119.10.82:8000)
+    coordinator_url: String,
 }
 
 impl Default for VmmConfig {
@@ -28,6 +30,7 @@ impl Default for VmmConfig {
             num_vcpus: 2,
             node_id: 0,
             total_nodes: 1,
+            coordinator_url: "http://127.0.0.1:8000".to_string(),
         }
     }
 }
@@ -108,9 +111,15 @@ impl SsiVmm {
         let base = region.as_ptr();
         let len = region.len() as usize;
 
-        // Start pager with RDMA transport info
-        pager::start_pager(base, len, self.config.node_id, self.config.total_nodes)
-            .context("Failed to start pager")?;
+        // Start pager with coordinator URL
+        pager::start_pager(
+            base,
+            len,
+            self.config.node_id,
+            self.config.total_nodes,
+            &self.config.coordinator_url,
+        )
+        .context("Failed to start pager")?;
 
         info!("Pager registered: base={:p}, len=0x{:x}", base, len);
         Ok(())
@@ -205,6 +214,7 @@ mod tests {
             num_vcpus: 4,
             node_id: 1,
             total_nodes: 2,
+            coordinator_url: "http://test:8000".to_string(),
         };
         assert_eq!(config.mem_size, 2 << 30);
         assert_eq!(config.num_vcpus, 4);
