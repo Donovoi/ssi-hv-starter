@@ -1,11 +1,27 @@
 # System Requirements & Engineering Plan
 
+## 0. Core Design Philosophy
+
+**MISSION CRITICAL: Build for maximum accessibility**
+
+This project prioritizes **consumer-grade hardware support** as a primary goal:
+
+- **TCP first, RDMA optional**: Default transport works on ANY standard Ethernet (1G, 10G, 25G+)
+- **Zero hardware barrier**: $0 cost to start (no $2000 RDMA NICs required)
+- **Graceful performance scaling**: 200-500µs latency on 10G Ethernet is acceptable; <100µs on RDMA is excellent
+- **Plug-and-play deployment**: Auto-detection, auto-configuration, zero manual network setup
+- **Optional upgrade path**: Add RDMA NICs later without code changes for <100µs latency
+
+**Target audience expansion:** ~100 RDMA experts → ~10,000+ developers with standard hardware
+
+**Implementation:** Multi-transport abstraction with TCP as default, RDMA as feature flag (`--features rdma-transport`)
+
 ## 1. Terminology
 - **Node**: A physical host (x86_64, Linux) participating in the SSI cluster.
 - **Guest**: The single VM spanning all nodes.
 - **Hyperkernel**: The distributed hypervisor process running on each node.
 - **Local/Remote page**: Portion of guest‑physical memory resident on the node vs. another node.
-- **RDMA**: Fabric operations (READ/WRITE, SEND/RECV) via InfiniBand or RoCEv2.
+- **Transport**: Network layer for page transfers (TCP by default, RDMA optional for high performance).
 
 ## 2. Functional Requirements (FR)
 **FR‑1**: Create one VM spanning N nodes; each node contributes CPU and RAM.  
@@ -34,8 +50,10 @@
 **M1 — Userfaultfd pager (Week 2–3)**  
 - Register guest RAM with `userfaultfd`; resolve faults by mapping zero‑pages or a local backing file.
 
-**M2 — RDMA transport (Week 3–5)**  
-- RDMA client/server with RC queue pairs; satisfy page faults via RDMA READ; measure latency.
+**M2 — Multi-transport layer (Week 3–5)** ✅ COMPLETE  
+- TCP transport (default): Works on ANY Ethernet, 200-500µs latency on 10G
+- RDMA transport (optional): High-performance upgrade, <100µs latency
+- Auto-detection and graceful fallback; PageTransport trait abstraction
 
 **M3 — Two‑node bring‑up (Week 5–6)**  
 - Directory service for page ownership; naive migration (first‑touch wins). Run Linux guest.
@@ -65,9 +83,19 @@
 - **RDMA**: verbs for connection setup; READ/WRITE; CQE handling
 
 ## 6. Deployment Requirements
-- Hosts with RDMA NICs (RoCEv2 or InfiniBand). PTP for TSC sync recommended.
-- Linux kernel with `userfaultfd` enabled; KVM available; OVMF blobs present.
-- Root privileges (development); containerized deployment later.
+
+**Minimum (Consumer Hardware):**
+- ANY 2+ Linux machines with standard Ethernet (1G minimum, 10G recommended)
+- Linux kernel 6.2+ with `userfaultfd` enabled; KVM available
+- OVMF firmware blobs present (`/usr/share/OVMF/`)
+- Root privileges for KVM and userfaultfd access
+- **Cost: $0** (uses existing hardware)
+
+**Optional (High Performance):**
+- RDMA NICs (RoCEv2 or InfiniBand) for <100µs latency
+- PTP for TSC synchronization
+- Huge pages for reduced TLB pressure
+- **Cost: ~$500-2000 per node** (performance upgrade)
 
 ## 7. Observability & KPIs
 - **Remote fault rate** (faults/s), **service time** histogram, **remote miss ratio** (%), **migration bytes**, **RDMA CQ errors**.

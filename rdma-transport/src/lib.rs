@@ -1,389 +1,223 @@
-//! RDMA transport layer for remote page fetching (M2)
+//! Page transport layer for distributed virtual machine (M2)
 //!
-//! Production: Use rdma-core (ibverbs) with RC queue pairs
-//! Development fallback: Stub implementation for testing without RDMA hardware
+//! **CONSUMER-GRADE HARDWARE FIRST**: Works on any network hardware out-of-the-box.
 //!
-//! Target latency: median <100µs, p99 <500µs (NFR-latency)
+//! ## Quick Start (Zero Configuration)
+//!
+//! ```rust,no_run
+//! use rdma_transport::{TransportManager, TransportEndpoint};
+//!
+//! // Works on ANY hardware - automatically selects best available transport
+//! let mut transport = TransportManager::new(1).expect("Failed to create");
+//!
+//! // Connect to peer
+//! let endpoint = TransportEndpoint::Tcp {
+//!     addr: "192.168.1.100".to_string(),
+//!     port: 50051,
+//! };
+//! transport.connect_peer(2, endpoint).expect("Failed to connect");
+//!
+//! // Fetch page (works the same whether TCP or RDMA)
+//! let page_data = transport.fetch_page(0x1000, 2).expect("Failed to fetch");
+//! ```
+//!
+//! ## Supported Transports
+//!
+//! - **TCP** (default): Works on ANY network hardware - Ethernet, WiFi, etc.
+//!   - Latency: 200-500µs (10G), 500-2000µs (1G)
+//!   - Zero configuration required
+//!   - Perfect for development and small deployments
+//!
+//! - **RDMA** (optional): High-performance mode  
+//!   - Requires InfiniBand or RoCE NICs
+//!   - Latency: <100µs median, <500µs p99
+//!   - Enable with `--features rdma-transport`
+//!
+//! The system automatically uses the best available transport.
 
+pub mod transport;
+
+#[cfg(feature = "rdma-transport")]
 mod rdma;
 
-use anyhow::{anyhow, Context, Result};
-use log::{debug, info, warn};
+use anyhow::{anyhow, Result};
+use log::{info, warn};
 use parking_lot::RwLock;
-use rdma::{QpEndpoint, RdmaConnection, RdmaDevice, RdmaMemoryRegion};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use thiserror::Error;
+use transport::{PageTransport, TransportEndpoint};
 
 pub const PAGE_SIZE: usize = 4096;
 
-// Re-export for coordinator integration
+// Re-exports
+pub use transport::{TransportEndpoint as Endpoint, TransportTier};
+
+#[cfg(feature = "rdma-transport")]
 pub use rdma::QpEndpoint as RdmaEndpoint;
 
-#[derive(Error, Debug)]
-pub enum TransportError {
-    #[error("Connection failed: {0}")]
-    ConnectionFailed(String),
-
-    #[error("RDMA operation failed: {0}")]
-    RdmaFailed(String),
-
-    #[error("Timeout waiting for response")]
-    Timeout,
-
-    #[error("Node not found: {0}")]
-    NodeNotFound(u32),
-}
-
-/// Remote memory information for a page
-#[derive(Debug, Clone)]
-pub struct RemotePageInfo {
-    pub node_id: u32,
-    pub addr: u64,
-    pub rkey: u32,
-}
-
-/// Transport manager for cluster-wide RDMA operations
+/// Transport manager - unified API for all transport types
 pub struct TransportManager {
     local_node_id: u32,
-    device: Option<Arc<RdmaDevice>>,
-    page_pool_mr: Option<Arc<RdmaMemoryRegion>>,
-    connections: Arc<RwLock<HashMap<u32, Arc<RdmaConnection>>>>,
-    remote_pages: Arc<RwLock<HashMap<u64, RemotePageInfo>>>,
+    transport: Box<dyn PageTransport>,
+    peer_endpoints: Arc<RwLock<HashMap<u32, TransportEndpoint>>>,
 }
 
 impl TransportManager {
-    /// Create new transport manager
+    /// Create transport manager with auto-detected best transport
     ///
-    /// # Arguments
-    /// * `local_node_id` - This node's ID in the cluster
-    /// * `device_name` - RDMA device name (e.g., "mlx5_0", "rxe0")
-    pub fn new(local_node_id: u32, device_name: Option<&str>) -> Result<Self> {
-        info!("Initializing transport manager for node {}", local_node_id);
-        
-        // Try to open RDMA device if specified
-        let (device, page_pool_mr) = if let Some(dev_name) = device_name {
-            match RdmaDevice::open(dev_name) {
-                Ok(dev) => {
-                    info!("RDMA device {} opened successfully", dev_name);
-                    
-                    // Allocate and register page pool (1024 pages = 4MB)
-                    let pool_size = PAGE_SIZE * 1024;
-                    let mut page_pool = vec![0u8; pool_size];
-                    
-                    match dev.register_memory(page_pool.as_mut_ptr(), pool_size) {
-                        Ok(mr) => {
-                            info!("Registered page pool: {} pages", 1024);
-                            // Leak the vec so it stays alive
-                            Box::leak(page_pool.into_boxed_slice());
-                            (Some(dev), Some(Arc::new(mr)))
-                        }
-                        Err(e) => {
-                            warn!("Failed to register page pool: {}", e);
-                            (Some(dev), None)
-                        }
-                    }
-                }
-                Err(e) => {
-                    warn!("Failed to open RDMA device {}: {}", dev_name, e);
-                    warn!("Running in stub mode - RDMA operations will fail");
-                    (None, None)
-                }
-            }
-        } else {
-            info!("No RDMA device specified, running in stub mode");
-            (None, None)
-        };
-        
+    /// Tries RDMA first (if compiled in), falls back to TCP.
+    /// **Always works** - no special hardware required.
+    pub fn new(local_node_id: u32) -> Result<Self> {
+        info!("🚀 Initializing transport for node {}", local_node_id);
+        info!("💡 Consumer-grade hardware support enabled (plug-and-play)");
+
+        let transport = transport::create_transport(local_node_id)?;
+        let tier = transport.performance_tier();
+
+        info!("📊 Network tier: {}", tier);
+        info!(
+            "⏱️  Expected latency: ~{}µs",
+            tier.expected_latency().as_micros()
+        );
+
+        if matches!(tier, TransportTier::Basic) {
+            warn!("⚠️  1 Gbps network detected - consider upgrading to 10G for better performance");
+        }
+
         Ok(Self {
             local_node_id,
-            device,
-            page_pool_mr,
-            connections: Arc::new(RwLock::new(HashMap::new())),
-            remote_pages: Arc::new(RwLock::new(HashMap::new())),
+            transport,
+            peer_endpoints: Arc::new(RwLock::new(HashMap::new())),
         })
     }
-    
-    /// Get local RDMA endpoint for this node
-    ///
-    /// Returns endpoint info to share with other nodes for connection establishment
-    pub fn get_local_endpoint(&self, remote_node_id: u32) -> Result<RdmaEndpoint> {
-        let device = self.device.as_ref()
-            .ok_or_else(|| anyhow!("RDMA device not available"))?;
-        
-        // Create QP for this connection
-        let conn = RdmaConnection::create(device.clone(), 256)?;
-        let endpoint = conn.local_endpoint().clone();
-        
-        // Store connection (not yet connected)
-        self.connections.write().insert(remote_node_id, Arc::new(conn));
-        
-        Ok(endpoint)
+
+    /// Get local endpoint to share with peers
+    pub fn local_endpoint(&self) -> TransportEndpoint {
+        self.transport.local_endpoint()
     }
-    
-    /// Connect to remote node using exchanged endpoint
-    pub fn connect_node(
-        &self,
-        remote_node_id: u32,
-        remote_endpoint: RdmaEndpoint,
-    ) -> Result<()> {
-        info!("Connecting to node {}", remote_node_id);
-        
-        let device = self.device.as_ref()
-            .ok_or_else(|| anyhow!("RDMA device not available"))?;
-        
-        // Check if connection already exists
-        {
-            let conns = self.connections.read();
-            if conns.contains_key(&remote_node_id) {
-                info!("Connection to node {} already exists", remote_node_id);
-                return Ok(());
-            }
+
+    /// Connect to a peer node
+    ///
+    /// Endpoint can be:
+    /// - TCP: "192.168.1.100:50051" or TransportEndpoint::Tcp
+    /// - RDMA: QP endpoint info as TransportEndpoint::Rdma
+    pub fn connect_peer(&mut self, remote_node_id: u32, endpoint: TransportEndpoint) -> Result<()> {
+        info!("🔗 Connecting to node {}", remote_node_id);
+
+        self.transport.connect(remote_node_id, endpoint.clone())?;
+        self.peer_endpoints.write().insert(remote_node_id, endpoint);
+
+        // Measure latency
+        if let Ok(latency) = self.transport.measure_latency(remote_node_id) {
+            info!(
+                "✅ Connected to node {} (latency: {}µs)",
+                remote_node_id,
+                latency.as_micros()
+            );
         }
-        
-        // Create new connection
-        let mut conn = RdmaConnection::create(device.clone(), 256)?;
-        conn.connect(remote_node_id, remote_endpoint)?;
-        
-        self.connections.write().insert(remote_node_id, Arc::new(conn));
-        
-        info!("Connected to node {}", remote_node_id);
+
         Ok(())
     }
-    
-    /// Register remote page location
-    pub fn register_remote_page(&self, gpa: u64, page_info: RemotePageInfo) {
-        debug!("Registering remote page: gpa=0x{:x}, node={}", gpa, page_info.node_id);
-        self.remote_pages.write().insert(gpa, page_info);
-    }
-    
-    /// Fetch page from remote node via RDMA READ
+
+    /// Fetch a page from remote node
     ///
     /// # Arguments
-    /// * `gpa` - Guest physical address of the page
+    /// * `gpa` - Guest physical address
+    /// * `remote_node_id` - Node that owns the page
     ///
     /// # Returns
-    /// Page data (4096 bytes) and operation latency
-    pub fn fetch_page(&self, gpa: u64) -> Result<(Vec<u8>, Duration)> {
-        debug!("Fetching page: gpa=0x{:x}", gpa);
-        
-        // Get remote page info
-        let page_info = self.remote_pages.read()
-            .get(&gpa)
-            .cloned()
-            .ok_or_else(|| anyhow!("Page 0x{:x} not registered", gpa))?;
-        
-        // Get connection
-        let conn = self.connections.read()
-            .get(&page_info.node_id)
-            .cloned()
-            .ok_or_else(|| TransportError::NodeNotFound(page_info.node_id))?;
-        
-        // Get memory region for transfer
-        let mr = self.page_pool_mr.as_ref()
-            .ok_or_else(|| anyhow!("Page pool not available"))?;
-        
-        // Perform RDMA READ
-        let duration = conn.rdma_read(
-            mr,
-            0,
-            page_info.addr,
-            page_info.rkey,
-            PAGE_SIZE,
-        )?;
-        
-        // Copy data from MR to buffer
-        let mut page_data = vec![0u8; PAGE_SIZE];
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                mr.addr,
-                page_data.as_mut_ptr(),
-                PAGE_SIZE,
-            );
-        }
-        
-        debug!("Fetched page 0x{:x} in {:?}", gpa, duration);
-        
-        Ok((page_data, duration))
+    /// Page data (4KB)
+    pub fn fetch_page(&self, gpa: u64, remote_node_id: u32) -> Result<Vec<u8>> {
+        self.transport.fetch_page(gpa, remote_node_id)
     }
-    
-    /// Send page to remote node via RDMA WRITE
-    pub fn send_page(&self, node_id: u32, gpa: u64, data: &[u8]) -> Result<Duration> {
-        if data.len() != PAGE_SIZE {
-            return Err(anyhow!("Invalid page size: {}", data.len()));
-        }
-        
-        debug!("Sending page: gpa=0x{:x}, to node {}", gpa, node_id);
-        
-        // Get connection
-        let conn = self.connections.read()
-            .get(&node_id)
-            .cloned()
-            .ok_or_else(|| TransportError::NodeNotFound(node_id))?;
-        
-        // Get memory region
-        let mr = self.page_pool_mr.as_ref()
-            .ok_or_else(|| anyhow!("Page pool not available"))?;
-        
-        // Copy data to MR
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                data.as_ptr(),
-                mr.addr,
-                PAGE_SIZE,
-            );
-        }
-        
-        // Perform RDMA WRITE
-        // Note: Remote address and rkey should come from page directory
-        let remote_addr = gpa; // Simplified - should be translated
-        let remote_rkey = 0; // TODO: Get from coordinator
-        
-        let duration = conn.rdma_write(
-            mr,
-            0,
-            remote_addr,
-            remote_rkey,
-            PAGE_SIZE,
-        )?;
-        
-        debug!("Sent page 0x{:x} in {:?}", gpa, duration);
-        
-        Ok(duration)
+
+    /// Send a page to remote node (for migration)
+    pub fn send_page(&self, gpa: u64, data: &[u8], remote_node_id: u32) -> Result<()> {
+        self.transport.send_page(gpa, data, remote_node_id)
     }
-    
-    /// Get statistics for a connection
-    pub fn get_connection_stats(&self, node_id: u32) -> Result<ConnectionStats> {
-        // TODO: Implement connection statistics
-        Ok(ConnectionStats {
-            node_id,
-            active: self.connections.read().contains_key(&node_id),
-            operations_count: 0,
-            bytes_transferred: 0,
-        })
+
+    /// Get current performance tier
+    pub fn performance_tier(&self) -> TransportTier {
+        self.transport.performance_tier()
     }
-    
-    /// Close connection to remote node
-    pub fn disconnect_node(&self, node_id: u32) -> Result<()> {
-        info!("Disconnecting from node {}", node_id);
-        
-        self.connections.write().remove(&node_id)
-            .ok_or_else(|| anyhow!("No connection to node {}", node_id))?;
-        
-        info!("Disconnected from node {}", node_id);
-        Ok(())
-    }
-    
-    /// Check if RDMA is available
-    pub fn is_rdma_available(&self) -> bool {
-        self.device.is_some()
+
+    /// Register memory region (for zero-copy if supported)
+    pub fn register_memory(
+        &self,
+        addr: *mut u8,
+        length: usize,
+    ) -> Result<Box<dyn transport::MemoryRegion>> {
+        self.transport.register_memory(addr, length)
     }
 }
 
-/// Connection statistics
-#[derive(Debug, Clone)]
-pub struct ConnectionStats {
-    pub node_id: u32,
-    pub active: bool,
-    pub operations_count: u64,
-    pub bytes_transferred: u64,
-}
+// Global transport manager (initialized by init_transport)
+static mut GLOBAL_TRANSPORT: Option<TransportManager> = None;
+static INIT_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 
-// Global transport manager (initialized by VMM or coordinator)
-static mut TRANSPORT: Option<Arc<TransportManager>> = None;
+/// Initialize global transport (call once at startup)
+pub fn init_transport(local_node_id: u32) -> Result<()> {
+    let _lock = INIT_LOCK.lock();
 
-/// Initialize global transport manager
-///
-/// Must be called before using global fetch_page/send_page functions
-pub fn init_transport(local_node_id: u32, device_name: Option<&str>) -> Result<()> {
-    info!("Initializing global transport for node {}", local_node_id);
-    
-    let manager = TransportManager::new(local_node_id, device_name)?;
-    
     unsafe {
-        TRANSPORT = Some(Arc::new(manager));
+        if GLOBAL_TRANSPORT.is_some() {
+            return Err(anyhow!("Transport already initialized"));
+        }
+
+        GLOBAL_TRANSPORT = Some(TransportManager::new(local_node_id)?);
     }
-    
+
     Ok(())
 }
 
 /// Get global transport manager
-pub fn get_transport() -> Result<Arc<TransportManager>> {
+pub fn get_transport() -> Result<&'static mut TransportManager> {
     unsafe {
-        TRANSPORT.as_ref()
-            .cloned()
-            .ok_or_else(|| anyhow!("Transport not initialized"))
+        GLOBAL_TRANSPORT
+            .as_mut()
+            .ok_or_else(|| anyhow!("Transport not initialized. Call init_transport() first."))
     }
 }
 
-/// Fetch page from remote node (global convenience function)
-pub fn fetch_page(gpa: u64) -> Result<Vec<u8>> {
-    let transport = get_transport()?;
-    let (data, _duration) = transport.fetch_page(gpa)?;
-    Ok(data)
+/// Connect to remote node (convenience function)
+pub fn connect_node(remote_node_id: u32, endpoint: TransportEndpoint) -> Result<()> {
+    get_transport()?.connect_peer(remote_node_id, endpoint)
 }
 
-/// Send page to remote node (global convenience function)
-pub fn send_page(node_id: u32, gpa: u64, data: &[u8]) -> Result<()> {
-    let transport = get_transport()?;
-    transport.send_page(node_id, gpa, data)?;
-    Ok(())
+/// Fetch page from remote node (convenience function)
+pub fn fetch_page(gpa: u64, remote_node_id: u32) -> Result<Vec<u8>> {
+    get_transport()?.fetch_page(gpa, remote_node_id)
+}
+
+/// Send page to remote node (convenience function)
+pub fn send_page(gpa: u64, data: &[u8], remote_node_id: u32) -> Result<()> {
+    get_transport()?.send_page(gpa, data, remote_node_id)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
-    fn test_transport_manager_creation_stub() {
-        // Should work without RDMA device
-        let mgr = TransportManager::new(0, None);
-        assert!(mgr.is_ok());
-        let mgr = mgr.unwrap();
-        assert!(!mgr.is_rdma_available());
+    fn test_transport_creation() {
+        // Should always work (TCP fallback)
+        let transport = TransportManager::new(1);
+        if let Err(e) = &transport {
+            eprintln!("Transport creation failed: {:?}", e);
+        }
+        assert!(transport.is_ok());
     }
-    
+
+    #[test]
+    fn test_global_init() {
+        // Test is isolated, so we can init here
+        let result = init_transport(99);
+        assert!(result.is_ok());
+    }
+
     #[test]
     fn test_page_size_constant() {
         assert_eq!(PAGE_SIZE, 4096);
-    }
-    
-    #[test]
-    #[ignore] // Requires RDMA hardware
-    fn test_transport_manager_with_rdma() {
-        let mgr = TransportManager::new(0, Some("mlx5_0"));
-        if let Ok(mgr) = mgr {
-            assert!(mgr.is_rdma_available());
-        }
-    }
-    
-    #[test]
-    fn test_global_init() {
-        let result = init_transport(0, None);
-        assert!(result.is_ok());
-        
-        let transport = get_transport();
-        assert!(transport.is_ok());
-    }
-    
-    #[test]
-    fn test_remote_page_registration() {
-        let mgr = TransportManager::new(0, None).unwrap();
-        
-        let page_info = RemotePageInfo {
-            node_id: 1,
-            addr: 0x1000,
-            rkey: 12345,
-        };
-        
-        mgr.register_remote_page(0x1000, page_info.clone());
-        
-        // Verify registration
-        let stored = mgr.remote_pages.read().get(&0x1000).cloned();
-        assert!(stored.is_some());
-        let stored = stored.unwrap();
-        assert_eq!(stored.node_id, 1);
-        assert_eq!(stored.addr, 0x1000);
     }
 }

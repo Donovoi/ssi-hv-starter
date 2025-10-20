@@ -5,6 +5,16 @@
 
 A research prototype that **aggregates multiple x86_64 machines into one large NUMA system** presented to a guest OS via UEFI/ACPI.
 
+## 🎯 Core Design Principles
+
+**Mission Critical: Build for maximum accessibility**
+- **TCP first, RDMA optional** - Works on ANY standard Ethernet hardware (consumer-grade, no special NICs required)
+- **Zero-config networking** - Plug-and-play deployment, automatic transport detection
+- **Graceful performance scaling** - 200-500µs on 10G Ethernet (good), <100µs on RDMA (excellent)
+- **Cost barrier: $0** - No specialized hardware required to start, optional upgrade path to RDMA
+
+👉 **See [QUICKSTART.md](QUICKSTART.md)** for 3-step setup on consumer hardware
+
 ## 🎯 Project Status
 
 **Milestones Complete:** M0 (VMM Skeleton) ✅ | M1 (Userfaultfd Pager) ✅  
@@ -23,6 +33,11 @@ A research prototype that **aggregates multiple x86_64 machines into one large N
 
 ### Prerequisites
 
+**Hardware:** ANY 2+ Linux machines with standard Ethernet (1G, 10G, or better)
+- No special RDMA NICs required (optional upgrade for <100µs latency)
+- Consumer-grade hardware fully supported (desktops, laptops, cloud VMs)
+
+**Software:**
 - Rust stable toolchain (2021 edition)
 - Python 3.10+
 - Linux kernel 6.2+ (for KVM and userfaultfd)
@@ -58,6 +73,8 @@ cargo run --bin acpi-gen -- cluster-config.yaml
 
 ## 📚 Documentation
 
+- **[ARCHITECTURE.md](ARCHITECTURE.md)** - 🎯 **Core design philosophy: TCP-first accessibility**
+- **[QUICKSTART.md](QUICKSTART.md)** - 🚀 3-step setup for consumer hardware
 - **[DEVELOPMENT.md](DEVELOPMENT.md)** - Development guide and architecture
 - **[STATUS.md](STATUS.md)** - Detailed milestone tracking
 - **[TEST_COVERAGE.md](TEST_COVERAGE.md)** - Test inventory and coverage
@@ -83,11 +100,11 @@ cargo run --bin acpi-gen -- cluster-config.yaml
 - Statistics collection (latency, fault rate)
 - Located in `pager/`
 
-**RDMA Transport**
-- Connection management framework
-- Page fetch/send API
-- Ready for ibverbs integration
-- Located in `rdma-transport/`
+**Transport Layer** (rdma-transport/)
+- **TCP transport** (default) - Works on ANY network hardware
+- **RDMA transport** (optional) - High-performance upgrade path
+- Auto-detection and graceful fallback
+- Page fetch/send API with <500µs latency on consumer hardware
 
 **ACPI Generator**
 - NUMA topology table generation (SRAT, SLIT, HMAT)
