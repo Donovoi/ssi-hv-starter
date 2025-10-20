@@ -1,0 +1,145 @@
+# Example cluster configuration for SSI-HV
+# 
+# This file defines a 2-node cluster suitable for testing M3
+# (two-node bring-up with distributed memory)
+
+cluster:
+  name: "dev-cluster"
+  
+  # Guest VM configuration
+  guest:
+    total_memory_gb: 4
+    total_vcpus: 8
+    numa_nodes: 2
+  
+  # Node definitions
+  nodes:
+    - node_id: 0
+      hostname: "node0.cluster.local"
+      ip_address: "192.168.100.10"
+      
+      # RDMA configuration
+      rdma:
+        device: "mlx5_0"  # InfiniBand or RoCE device
+        port: 1
+        gid_index: 0
+        gid: "fe80::0000:0000:0000:0001"
+      
+      # Resource allocation
+      resources:
+        vcpu_start: 0
+        vcpu_count: 4
+        memory_gb: 2
+        memory_start_gpa: "0x0"
+      
+      # NUMA configuration for ACPI
+      numa:
+        node_id: 0
+        # Distance to other nodes (self = 10, remote = 20)
+        distances: [10, 20]
+        # Latency in nanoseconds (for HMAT)
+        latencies: [100, 2000]
+        # Bandwidth in MB/s
+        bandwidth: [51200, 12800]
+    
+    - node_id: 1
+      hostname: "node1.cluster.local"
+      ip_address: "192.168.100.11"
+      
+      rdma:
+        device: "mlx5_1"
+        port: 1
+        gid_index: 0
+        gid: "fe80::0000:0000:0000:0002"
+      
+      resources:
+        vcpu_start: 4
+        vcpu_count: 4
+        memory_gb: 2
+        memory_start_gpa: "0x80000000"  # 2GB offset
+      
+      numa:
+        node_id: 1
+        distances: [20, 10]
+        latencies: [2000, 100]
+        bandwidth: [12800, 51200]
+
+# ACPI configuration
+acpi:
+  # Generate SRAT (System Resource Affinity Table)
+  generate_srat: true
+  
+  # Generate SLIT (System Locality Information Table)
+  generate_slit: true
+  
+  # Generate HMAT (Heterogeneous Memory Attribute Table)
+  # Optional for MVP, but useful for detailed NUMA info
+  generate_hmat: true
+  
+  # SLIT multiplier (10 = local, multiply by this for remote)
+  slit_local_distance: 10
+
+# Pager configuration
+pager:
+  # Page size (4096 for 4K pages, can use 2097152 for 2M huge pages)
+  page_size: 4096
+  
+  # First-touch allocation policy
+  allocation_policy: "first_touch"
+  
+  # Enable page migration
+  enable_migration: true
+  
+  # Migration threshold (migrate if remote access > X%)
+  migration_threshold: 0.8
+
+# RDMA configuration
+rdma:
+  # Connection type (RC = Reliable Connection)
+  qp_type: "RC"
+  
+  # Queue sizes
+  send_queue_size: 256
+  recv_queue_size: 256
+  
+  # Completion queue size
+  cq_size: 512
+  
+  # Max inline data (for small messages)
+  max_inline_data: 64
+  
+  # Enable RDMA READ for page fetches
+  use_rdma_read: true
+  
+  # Timeout for operations (milliseconds)
+  timeout_ms: 1000
+
+# Telemetry configuration
+telemetry:
+  # Enable Prometheus metrics
+  enable_prometheus: true
+  prometheus_port: 9090
+  
+  # Metrics collection interval (seconds)
+  collection_interval: 1
+  
+  # Keep statistics history
+  history_size: 1000
+  
+  # Log level (debug, info, warn, error)
+  log_level: "info"
+
+# Performance tuning
+performance:
+  # Target latency SLOs (microseconds)
+  target_median_latency_us: 100
+  target_p99_latency_us: 500
+  
+  # Target remote miss ratio (after warm-up)
+  target_miss_ratio: 0.05
+  
+  # Prefetch on sequential access
+  enable_prefetch: false
+  
+  # Huge page support (2MB pages)
+  enable_huge_pages: false

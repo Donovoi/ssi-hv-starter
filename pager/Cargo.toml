@@ -6,3 +6,8 @@ edition = "2021"
 [dependencies]
 anyhow = "1"
 userfaultfd = "0.7"
+log = "0.4"
+libc = "0.2"
+crossbeam-channel = "0.5"
+parking_lot = "0.12"
+rdma-transport = { path = "../rdma-transport" }

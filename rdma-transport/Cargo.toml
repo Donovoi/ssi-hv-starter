@@ -5,3 +5,9 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1"
+log = "0.4"
+serde = { version = "1", features = ["derive"] }
+parking_lot = "0.12"
+thiserror = "1"
+# Note: rdma-core-sys or ibverbs would go here for real RDMA
+# Using TCP as fallback for development

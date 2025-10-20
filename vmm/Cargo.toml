@@ -6,7 +6,13 @@ edition = "2021"
 [dependencies]
 anyhow = "1"
 kvm-ioctls = "0.24"
-kvm-bindings = "0.8"
-vm-memory = "0.12"
+kvm-bindings = "0.14"                                         # Match kvm-ioctls dependency
+vm-memory = { version = "0.12", features = ["backend-mmap"] }
 log = "0.4"
 env_logger = "0.11"
+libc = "0.2"
+pager = { path = "../pager" }
+rdma-transport = { path = "../rdma-transport" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+crossbeam-channel = "0.5"
