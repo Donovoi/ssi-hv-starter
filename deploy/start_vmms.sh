@@ -7,7 +7,7 @@ set -e
 NODE_ACCESS="access"
 NODE_MO="mo"
 PROJECT_DIR="/home/toor/ssi-hv-starter"
-COORDINATOR_URL="http://100.119.10.82:8000"
+COORDINATOR_URL="http://100.86.226.54:8001"
 SUDO_PASSWORD="toor"
 
 # Colors

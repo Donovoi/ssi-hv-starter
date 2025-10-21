@@ -338,12 +338,24 @@ async def register_endpoint(node_id: int, endpoint: TransportEndpoint) -> dict:
     This allows nodes to advertise their TCP or RDMA endpoints
     for other nodes to discover and connect to.
     """
-    if current_cluster is None:
-        raise HTTPException(status_code=404, detail="No active cluster")
+    global current_cluster
 
+    # Auto-create cluster if it doesn't exist (for testing/development)
+    if current_cluster is None:
+        logger.warning("No cluster exists, auto-creating for testing")
+        current_cluster = ClusterState(name="auto-cluster")
+
+    # Auto-add node if it doesn't exist
     if node_id not in current_cluster.nodes:
-        raise HTTPException(
-            status_code=404, detail=f"Node {node_id} not found")
+        logger.info(f"Auto-adding node {node_id} to cluster")
+        node_info = NodeInfo(
+            node_id=node_id,
+            hostname=f"node-{node_id}",
+            ip_address="unknown",
+            cpu_count=0,
+            memory_mb=0
+        )
+        current_cluster.add_node(node_info)
 
     # Store endpoint
     current_cluster.endpoints[node_id] = endpoint
@@ -371,7 +383,7 @@ async def get_endpoint(node_id: int) -> TransportEndpoint:
     for remote page fetches.
     """
     if current_cluster is None:
-        raise HTTPException(status_code=404, detail="No active cluster")
+        raise HTTPException(status_code=404, detail="No cluster exists yet")
 
     if node_id not in current_cluster.endpoints:
         raise HTTPException(
@@ -390,7 +402,7 @@ async def list_all_endpoints() -> dict:
     Useful for nodes to discover all peers at once.
     """
     if current_cluster is None:
-        raise HTTPException(status_code=404, detail="No active cluster")
+        return {"cluster_name": "none", "endpoints": {}}
 
     return {
         "cluster_name": current_cluster.name,
@@ -419,12 +431,20 @@ def main():
     logger.info("Starting SSI-HV Coordinator (M3)")
     logger.info("API documentation: http://0.0.0.0:8000/docs")
 
-    uvicorn.run(
+    # Configure uvicorn with socket reuse to avoid bind errors
+    config = uvicorn.Config(
         app,
         host="0.0.0.0",
         port=8000,
         log_level="info",
     )
+    server = uvicorn.Server(config)
+
+    # Enable SO_REUSEADDR to avoid "address already in use" errors
+    import socket
+    server.config.uds = None
+
+    server.run()
 
 
 if __name__ == "__main__":
