@@ -7,7 +7,7 @@ set -e
 NODE_ACCESS="node0"
 NODE_MO="node1"
 PROJECT_DIR="${PROJECT_DIR:-$HOME/ssi-hv-starter}"
-COORDINATOR_URL="http://198.51.100.11:8000"
+: "${COORDINATOR_URL:?Set COORDINATOR_URL to your cluster coordinator URL}"
 SUDO_PASSWORD="toor"
 
 # Colors
