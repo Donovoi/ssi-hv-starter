@@ -215,3 +215,7 @@ python3 examples/phase6_integration.py
 ssh node0 "cd ~/ssi-hv-starter && bash deploy/cleanup.sh"
 ssh node1 "cd ~/ssi-hv-starter && bash deploy/cleanup.sh"
 ```
+
+## Local configuration
+
+Published addresses and node names are sanitized examples. Configure the SSH aliases `node0` and `node1` for your own machines. Set `COORDINATOR_URL` to your coordinator before running the deployment scripts. `PROJECT_DIR` can override the default `$HOME/ssi-hv-starter` path. Never commit local credentials or private machine details.
